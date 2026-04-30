@@ -1,67 +1,151 @@
-@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css');
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
-@import "tailwindcss";
+export const calculateSpineThickness = (innerSections) => {
+  let thickness = 0;
+  innerSections.forEach(section => {
+    let paperThickness = 0.05; // Default for 80g
+    if (section.weight === '70g') paperThickness = 0.045;
+    else if (section.weight === '80g') paperThickness = 0.05;
+    else if (section.weight === '100g') paperThickness = 0.06;
+    else if (section.weight === '120g') paperThickness = 0.075;
+    else if (section.weight === '150g') paperThickness = 0.09;
+    
+    thickness += section.pages * paperThickness;
+  });
+  return Math.max(0, parseFloat(thickness.toFixed(2)));
+};
 
-@theme {
-  --font-sans: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, system-ui, Roboto, "Helvetica Neue", "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", sans-serif;
-  --color-brand-blue: #0066FF;
-  --color-brand-orange: #FF5C00;
-  --color-soft-lavender: #EBEBFF;
-  --color-soft-pink: #FEECEB;
-  --color-soft-mint: #E8F5F1;
-  --color-dark-bg: #111111;
-  --color-apple-bg: #F8F9FB;
-  --color-surface-white: #FFFFFF;
+export const calculatePriceBreakdown = (form, priceConfig) => {
+  const qty = form.quantity;
+  const range = priceConfig.ranges.find(r => qty >= r.min && (r.max === null || qty <= r.max)) || priceConfig.ranges[0];
+  const rangeConfig = priceConfig.pricesByRange[range.id];
+
+  // Determine which price to use
+  const inputCode = (form.companyInfo?.code || '').trim().toLowerCase();
+  const separateCompany = priceConfig.separateCompanies.find(c => 
+    (c.code || '').trim().toLowerCase() === inputCode
+  );
   
-  --radius-xl: 32px;
-  --radius-2xl: 48px;
-}
+  const codePrefix = inputCode.charAt(0);
+  let useSpecial = codePrefix === '2' || codePrefix === '3';
+  let useSeparate = !!separateCompany;
 
-@layer base {
-  body {
-    @apply bg-apple-bg text-[#0F172A] antialiased font-sans;
-    letter-spacing: -0.02em;
-    line-height: 1.5;
+  if (separateCompany?.priceMode) {
+    useSeparate = separateCompany.priceMode === 'separate';
+    useSpecial = separateCompany.priceMode === 'special';
   }
-}
 
-h1, h2, h3, h4 {
-  @apply tracking-tight font-black;
-  line-height: 1.1;
-}
+  const getExtraCharge = (charge) => {
+    if (useSeparate && separateCompany && charge.separate[separateCompany.id] !== undefined) {
+      return charge.separate[separateCompany.id];
+    }
+    return useSpecial ? charge.special : charge.general;
+  };
 
-p {
-  @apply leading-relaxed;
-}
+  // 1. Inner sections price
+  let innerBase = 0;
+  form.innerSections.forEach(section => {
+    const sizePrices = rangeConfig.innerPrices[form.size] || rangeConfig.innerPrices['신국판'];
+    const prices = sizePrices[section.printing] || sizePrices['1도'];
+    let pricePerPage = prices.general;
+    if (useSeparate && separateCompany && prices.separate[separateCompany.id] !== undefined) {
+      pricePerPage = prices.separate[separateCompany.id];
+    } else if (useSpecial) {
+      pricePerPage = prices.special;
+    }
+    innerBase += pricePerPage * section.pages;
+  });
+  const innerTotal = innerBase * qty;
+  const discountRate = (priceConfig.globalDiscountRate || 5) / 100;
+  const innerDiscount = form.applyDiscount ? Math.round(innerTotal * discountRate) : 0;
+  const innerFinal = innerTotal - innerDiscount;
 
-.sky-gradient {
-  background: linear-gradient(135deg, #0066FF 0%, #0047B3 100%);
-  position: relative;
-  overflow: hidden;
-}
+  // 2. Cover price
+  const getCoverUnitPrice = (paper, weight) => {
+    let unitPrice = rangeConfig.standardCoverPrice.general;
+    if (useSeparate && separateCompany && rangeConfig.standardCoverPrice.separate[separateCompany.id] !== undefined) {
+      unitPrice = rangeConfig.standardCoverPrice.separate[separateCompany.id];
+    } else if (useSpecial) {
+      unitPrice = rangeConfig.standardCoverPrice.special;
+    }
+    const isStandard = (paper === '스노우' || paper === '아트') && weight === '250';
+    if (!isStandard) {
+      unitPrice += 30;
+    }
+    return unitPrice;
+  };
 
-.bento-grid {
-  display: grid;
-  grid-template-columns: repeat(12, 1fr);
-  gap: 24px;
-}
+  const coverUnitPrice = getCoverUnitPrice(form.cover.paper, form.cover.weight);
+  const coverTotal = coverUnitPrice * qty;
+  const coverDiscount = form.applyDiscount ? Math.round(coverTotal * discountRate) : 0;
+  const coverFinal = coverTotal - coverDiscount;
 
-.bento-card {
-  @apply bg-white rounded-xl border border-slate-100 shadow-[0_8px_32px_rgba(0,0,0,0.04)] hover:shadow-[0_16px_48px_rgba(0,0,0,0.08)] transition-all duration-500;
-}
+  // 3. Extra charges
+  let extras = [];
+  
+  if (form.cover.printing === '양면 4도') {
+    extras.push({ name: '표지 양면인쇄', cost: getExtraCharge(rangeConfig.extraCharges.doubleSidedPrinting) * qty });
+  }
+  if (form.cover.hasFlaps) {
+    extras.push({ name: '표지 날개', cost: getExtraCharge(rangeConfig.extraCharges.flaps) * qty });
+  }
 
-.glass-pill {
-  @apply inline-flex items-center gap-2 px-6 py-2.5 bg-white/10 backdrop-blur-md rounded-full border border-white/20 text-white text-[12px] font-bold uppercase tracking-wider;
-}
+  // Belly Band and Jacket
+  if (form.bellyBand?.enabled) {
+    const bellyBandUnitPrice = getCoverUnitPrice(form.bellyBand.paper, form.bellyBand.weight);
+    let bellyBandCost = bellyBandUnitPrice * qty;
+    if (form.bellyBand.printing === '양면 4도') {
+      bellyBandCost += getExtraCharge(rangeConfig.extraCharges.doubleSidedPrinting) * qty;
+    }
+    extras.push({ name: '띠지', cost: bellyBandCost });
+  }
 
-.sticker-badge {
-  @apply inline-flex items-center justify-center px-4 py-1 rounded-full border-2 border-current text-[11px] font-black uppercase tracking-tight;
-}
+  if (form.jacket?.enabled) {
+    const jacketUnitPrice = getCoverUnitPrice(form.jacket.paper, form.jacket.weight);
+    let jacketCost = jacketUnitPrice * qty;
+    if (form.jacket.printing === '양면 4도') {
+      jacketCost += getExtraCharge(rangeConfig.extraCharges.doubleSidedPrinting) * qty;
+    }
+    extras.push({ name: '자켓', cost: jacketCost });
+  }
+  
+  let endpaperTotal = 0;
+  let endpaperDiscount = 0;
+  if (form.postProcessing?.endpaper && form.postProcessing.endpaper !== '없음') {
+    const charge = rangeConfig.extraCharges.endpaper;
+    if (charge) {
+      endpaperTotal = getExtraCharge(charge) * (form.postProcessing.endpaperPages || 0) * qty;
+      endpaperDiscount = form.applyDiscount ? Math.round(endpaperTotal * 0.5) : 0; // 50% discount if checked
+    }
+  }
+  
+  if (form.postProcessing?.epoxy) {
+    extras.push({ name: '에폭시', cost: getExtraCharge(rangeConfig.extraCharges.epoxy) * qty });
+  }
+  if (form.postProcessing?.foil && form.postProcessing.foil !== '없음') {
+    const charge = rangeConfig.extraCharges.foil;
+    if (charge) {
+      extras.push({ name: `박 (${form.postProcessing.foil})`, cost: getExtraCharge(charge) * qty });
+    }
+  }
 
-.soft-shadow {
-  shadow: 0 10px 40px -10px rgba(0, 0, 0, 0.1);
-}
+  const extrasTotal = extras.reduce((sum, item) => sum + item.cost, 0);
+  const endpaperFinal = endpaperTotal - endpaperDiscount;
 
-.text-balance {
-  text-wrap: balance;
-}
+  // 4. Shipping calculation (Box count)
+  // Assuming ~10,000 total pages per box (e.g. 50 books of 200 pages)
+  const totalPagesSum = form.innerSections.reduce((s, n) => s + n.pages, 0);
+  const totalProducedPages = totalPagesSum * qty;
+  const boxCount = Math.max(1, Math.ceil(totalProducedPages / 10000));
+  const shippingCost = boxCount * (priceConfig.globalShippingCost || 5000);
+
+  const total = innerFinal + coverFinal + extrasTotal + endpaperFinal + shippingCost;
+
+  return {
+    inner: { base: innerTotal, discount: innerDiscount, final: innerFinal },
+    cover: { base: coverTotal, discount: coverDiscount, final: coverFinal },
+    endpaper: { base: endpaperTotal, discount: endpaperDiscount, final: endpaperFinal },
+    extras,
+    extrasTotal,
+    shipping: { boxCount, cost: shippingCost },
+    total: Math.round(total)
+  };
+};
